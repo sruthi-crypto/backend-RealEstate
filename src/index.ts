@@ -570,7 +570,6 @@ export default {
 					return successResponse(data, "Products fetched successfully");
 				}
 			}
-
 			if (url.pathname.startsWith("/api/products/category/")) {
 				const category = url.pathname.split("/").pop();
 				const result = await callSupabase(env, `/rest/v1/products?category=eq.${category}`);
