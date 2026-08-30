@@ -5,6 +5,7 @@ create extension if not exists pgcrypto;
 
 drop table if exists public.users cascade;
 
+
 create table public.users (
   id uuid primary key default gen_random_uuid(),
   username text unique,
