@@ -6,6 +6,11 @@ declare namespace Cloudflare {
 		mainModule: typeof import("./src/index");
 	}
 	interface Env {
+		SUPABASE_URL: string;
+		SUPABASE_KEY: string;
+		JWT_SECRET: string;
+		TELEGRAM_BOT_TOKEN?: string;
+		TELEGRAM_CHAT_ID?: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

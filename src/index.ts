@@ -1,6 +1,5 @@
-import { SignJWT } from "jose";
+import { SignJWT, jwtVerify } from "jose";
 import { authenticator } from "otplib";
-import { jwtVerify } from "jose";
 const cors = {
 	"Access-Control-Allow-Origin": "*",
 	"Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
@@ -11,7 +10,56 @@ type Env = {
 	SUPABASE_URL: string;
 	SUPABASE_KEY: string;
 	JWT_SECRET: string;
+	TELEGRAM_BOT_TOKEN?: string;
+	TELEGRAM_CHAT_ID?: string;
 };
+
+// ================= PASSWORD HASH =================
+
+const PASSWORD_ITERATIONS = 310_000;
+const passwordEncoder = new TextEncoder();
+
+function encodeBase64(bytes: Uint8Array): string {
+	return btoa(String.fromCharCode(...bytes));
+}
+
+function decodeBase64(value: string): Uint8Array {
+	return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+}
+
+async function derivePasswordHash(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+	const material = await crypto.subtle.importKey('raw', passwordEncoder.encode(password), 'PBKDF2', false, ['deriveBits']);
+	const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, material, 256);
+	return new Uint8Array(bits);
+}
+
+async function hashPassword(password: string): Promise<string> {
+	const salt = crypto.getRandomValues(new Uint8Array(16));
+	const hash = await derivePasswordHash(password, salt, PASSWORD_ITERATIONS);
+	return `pbkdf2-sha256$${PASSWORD_ITERATIONS}$${encodeBase64(salt)}$${encodeBase64(hash)}`;
+}
+
+function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
+	let difference = left.length ^ right.length;
+	for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+		difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+	}
+	return difference === 0;
+}
+
+async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
+	const [algorithm, iterationValue, saltValue, hashValue] = storedHash.split('$');
+	if (algorithm !== 'pbkdf2-sha256' || !iterationValue || !saltValue || !hashValue) return false;
+	const iterations = Number(iterationValue);
+	if (!Number.isInteger(iterations) || iterations < 100_000) return false;
+	try {
+		const expected = decodeBase64(hashValue);
+		const actual = await derivePasswordHash(password, decodeBase64(saltValue), iterations);
+		return timingSafeEqual(actual, expected);
+	} catch {
+		return false;
+	}
+}
 
 class SupabaseRequestError extends Error {
 	status: number;
@@ -44,7 +92,8 @@ async function verifyAdmin(request: Request, env: Env) {
 
 		const { payload } = await jwtVerify(token, secret);
 
-		return payload; // ✅ valid user
+		if (payload.role !== 'admin' && payload.role !== 'super_admin') return null;
+		return payload;
 	} catch {
 		return null;
 	}
@@ -130,6 +179,110 @@ type LoginBody = {
 	email: string;
 	token: string;
 };
+
+// ================= TELEGRAM =================
+
+async function sendTelegramMessage(env: Env, text: string): Promise<void> {
+	if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+	try {
+		await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
+		});
+	} catch {
+		// silent fail — don't break main flow
+	}
+}
+
+// ================= USER AUTH (phone + password) =================
+
+async function handleUserRegister(request: Request, env: Env): Promise<Response> {
+	const body = (await getBody(request)) as Record<string, any> | null;
+	if (!body) return errorResponse('Invalid or empty JSON body', 400);
+	const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+	if (!/^\+?[0-9][0-9 -]{6,19}$/.test(phone)) return errorResponse('Enter a valid phone number', 400);
+	if (!body.password || body.password.length < 6) return errorResponse('Password must be at least 6 characters', 400);
+
+	// check duplicate
+	const existing = await callSupabase(env, `/rest/v1/users?phone=eq.${encodeURIComponent(phone)}&select=id`);
+	if (existing && existing.length > 0) return errorResponse('Phone number already registered', 409);
+
+	const passwordHash = await hashPassword(body.password);
+	const newUser = await callSupabase(env, '/rest/v1/users', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+		body: JSON.stringify({
+			phone,
+			password_hash: passwordHash,
+			role: 'user',
+			location: body.location || null,
+		}),
+	});
+
+	const user = Array.isArray(newUser) ? newUser[0] : newUser;
+	const secret = new TextEncoder().encode(env.JWT_SECRET);
+	const token = await new SignJWT({ id: user.id, phone: user.phone, role: 'user' })
+		.setProtectedHeader({ alg: 'HS256' })
+		.setExpirationTime('365d')
+		.sign(secret);
+
+	const { password_hash: _, ...safeUser } = user;
+
+	// Notify admin via Telegram
+	await sendTelegramMessage(env,
+		`🆕 <b>New User Registered</b>\nPhone: <code>${user.phone}</code>${user.location ? `\nLocation: ${user.location}` : ''}\nID: <code>${user.id}</code>`
+	);
+
+	return successResponse({ user: safeUser, token }, 'Registered successfully', 201);
+}
+
+async function handleUserLogin(request: Request, env: Env): Promise<Response> {
+	const body = (await getBody(request)) as Record<string, any> | null;
+	if (!body) return errorResponse('Invalid or empty JSON body', 400);
+	const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+	if (!phone || typeof body.password !== 'string') return errorResponse('Phone and password required', 400);
+
+	const users = await callSupabase(env, `/rest/v1/users?phone=eq.${encodeURIComponent(phone)}&role=eq.user`);
+	if (!users || users.length === 0) return errorResponse('Invalid phone or password', 401);
+
+	const user = users[0];
+	if (user.is_active === false) return errorResponse('This account is disabled', 403);
+	const valid = await verifyPassword(body.password, user.password_hash || '');
+	if (!valid) return errorResponse('Invalid phone or password', 401);
+	await callSupabase(env, `/rest/v1/users?id=eq.${encodeURIComponent(user.id)}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ last_login_at: new Date().toISOString() })
+	});
+
+	const secret = new TextEncoder().encode(env.JWT_SECRET);
+	const token = await new SignJWT({ id: user.id, phone: user.phone, role: 'user' })
+		.setProtectedHeader({ alg: 'HS256' })
+		.setExpirationTime('365d')
+		.sign(secret);
+
+	const { password_hash: _, ...safeUser } = user;
+	return successResponse({ user: safeUser, token }, 'Login successful');
+}
+
+async function handleUserMe(request: Request, env: Env): Promise<Response> {
+	const auth = request.headers.get('Authorization');
+	if (!auth) return errorResponse('Unauthorized', 401);
+	try {
+		const token = auth.replace('Bearer ', '');
+		const secret = new TextEncoder().encode(env.JWT_SECRET);
+		const { payload } = await jwtVerify(token, secret);
+		if (payload.role !== 'user') return errorResponse('Unauthorized', 401);
+
+		const users = await callSupabase(env, `/rest/v1/users?id=eq.${payload.id}&role=eq.user`);
+		if (!users || users.length === 0) return errorResponse('User not found', 404);
+		const { password_hash: _, ...safeUser } = users[0];
+		return successResponse(safeUser, 'User fetched successfully');
+	} catch {
+		return errorResponse('Unauthorized', 401);
+	}
+}
 
 function isSiteContentPath(pathname: string) {
 	return [
@@ -222,9 +375,8 @@ export default {
 			const isPublic =
 				request.method === "GET" ||
 				url.pathname === "/api/users/login" ||
-				url.pathname === "/api/users/register" ||
-				url.pathname === "/api/users/2fa/setup" ||
-				url.pathname === "/api/users/2fa/verify-setup";
+				url.pathname === "/api/user-auth/register" ||
+				url.pathname === "/api/user-auth/login";
 
 			if (!isPublic && ["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
 				const admin = await verifyAdmin(request, env);
@@ -235,10 +387,21 @@ export default {
 			if (url.pathname === "/" && request.method === "GET") {
 				return successResponse("API is running 🚀");
 			}
+
+			// ── User Auth (phone + password) ──────────────────────────────────
+			if (url.pathname === '/api/user-auth/register' && request.method === 'POST') {
+				return handleUserRegister(request, env);
+			}
+			if (url.pathname === '/api/user-auth/login' && request.method === 'POST') {
+				return handleUserLogin(request, env);
+			}
+			if (url.pathname === '/api/user-auth/me' && request.method === 'GET') {
+				return handleUserMe(request, env);
+			}
 			if (url.pathname === "/api/users/register" && request.method === "POST") {
 				const body = (await getBody(request)) as Record<string, any> | null;
 				if (!body) return errorResponse("Invalid or empty JSON body", 400);
-				if (!body.email) return errorResponse("Email required");
+				if (!body.email || !body.username) return errorResponse("Username and email required");
 
 				const result = await callSupabase(env, "/rest/v1/users", {
 					method: "POST",
@@ -246,7 +409,11 @@ export default {
 						"Content-Type": "application/json",
 						"Prefer": "return=representation"
 					},
-					body: JSON.stringify(body)
+					body: JSON.stringify({
+						username: body.username,
+						email: body.email,
+						role: body.role === 'super_admin' ? 'super_admin' : 'admin'
+					})
 				});
 				return successResponse(result, "User created successfully");
 			}
@@ -258,7 +425,7 @@ export default {
 				}
 
 				const res = await fetch(
-					`${env.SUPABASE_URL}/rest/v1/users?email=eq.${body.email}`,
+					`${env.SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(body.email)}&role=in.(admin,super_admin)`,
 					{
 						headers: {
 							apikey: env.SUPABASE_KEY,
@@ -316,14 +483,16 @@ export default {
 			}
 
 			if (url.pathname === "/api/users" && request.method === "GET") {
-				const users = await callSupabase(env, "/rest/v1/users?select=*");
-				return successResponse(users, "Users fetched successfully");
+				if (!(await verifyAdmin(request, env))) return errorResponse("Unauthorized", 401);
+				const users = await callSupabase(env, "/rest/v1/users?role=in.(admin,super_admin)&select=id,username,email,role,twoFactorEnabled,created_at,updated_at");
+				return successResponse(users, "Admins fetched successfully");
 			}
 
 			if (url.pathname.startsWith("/api/users/") && request.method === "GET") {
+				if (!(await verifyAdmin(request, env))) return errorResponse("Unauthorized", 401);
 				const id = url.pathname.split("/").pop();
-				const result = await callSupabase(env, `/rest/v1/users?id=eq.${id}`);
-				return successResponse(result, "User fetched successfully");
+				const result = await callSupabase(env, `/rest/v1/users?id=eq.${encodeURIComponent(id || '')}&role=in.(admin,super_admin)&select=id,username,email,role,twoFactorEnabled,created_at,updated_at`);
+				return successResponse(result, "Admin fetched successfully");
 			}
 
 			if (url.pathname.startsWith("/api/users/") && request.method === "PATCH") {

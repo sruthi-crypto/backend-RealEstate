@@ -18,6 +18,15 @@ async function adminAuthHeader() {
 	return `Bearer ${token}`;
 }
 
+async function userAuthHeader() {
+	const secret = new TextEncoder().encode(env.JWT_SECRET);
+	const token = await new SignJWT({ id: "user-1", role: "user" })
+		.setProtectedHeader({ alg: "HS256" })
+		.sign(secret);
+
+	return `Bearer ${token}`;
+}
+
 describe("API worker", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
@@ -34,6 +43,22 @@ describe("API worker", () => {
 			message: "Success",
 			data: "API is running 🚀"
 		});
+	});
+
+	it("does not allow a normal-user token to perform admin mutations", async () => {
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			new Request("http://example.com/api/properties", {
+				method: "POST",
+				headers: { Authorization: await userAuthHeader() },
+				body: JSON.stringify({ title: "Not allowed" })
+			}),
+			env,
+			ctx
+		);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(401);
 	});
 
 	it("wraps properties list data in a Worker Response", async () => {
@@ -101,8 +126,9 @@ describe("API worker", () => {
 	it("returns 400 for invalid register JSON", async () => {
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(
-			new Request("http://example.com/api/users/register", {
+		new Request("http://example.com/api/users/register", {
 				method: "POST",
+				headers: { Authorization: await adminAuthHeader() },
 				body: "{"
 			}),
 			env,
@@ -134,10 +160,10 @@ describe("API worker", () => {
 
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(
-			new Request("http://example.com/api/users/register", {
+		new Request("http://example.com/api/users/register", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ email: "test@example.com" })
+				headers: { "Content-Type": "application/json", Authorization: await adminAuthHeader() },
+				body: JSON.stringify({ username: "test-admin", email: "test@example.com" })
 			}),
 			env,
 			ctx
@@ -177,15 +203,15 @@ describe("API worker", () => {
 
 		expect(response.status).toBe(200);
 		expect(fetchMock).toHaveBeenCalledWith(
-			"https://supabase.test/rest/v1/site_content?key=eq.main",
+			"https://supabase.test/rest/v1/realstate_site_content",
 			expect.objectContaining({
-				method: "PATCH",
-				body: JSON.stringify({ heroTitle: "Updated" })
+				method: "POST",
+				body: JSON.stringify({ key: "main", heroTitle: "Updated" })
 			})
 		);
 		expect(await response.json()).toEqual({
 			success: true,
-			message: "Site content updated successfully",
+			message: "Site content created successfully",
 			data: [{ key: "main", heroTitle: "Updated" }]
 		});
 	});
