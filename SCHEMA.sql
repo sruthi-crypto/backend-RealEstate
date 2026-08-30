@@ -143,10 +143,10 @@ DECLARE
   pkg_id UUID;
   i INT;
   plans JSONB := '[
-    {"name":"Starter",      "description":"Basic access — entry-level property listings",      "stars":1,"seats":100,"sort":1},
-    {"name":"Standard",     "description":"Standard access — premium property listings",        "stars":2,"seats":100,"sort":2},
-    {"name":"Professional", "description":"Pro access — exclusive listings + analytics",        "stars":3,"seats":50, "sort":3},
-    {"name":"Ultimate",     "description":"Unlimited access — all listings + priority support", "stars":4,"seats":25, "sort":4}
+    {"name":"Starter",      "description":"Basic access — entry-level property listings",      "stars":20,"seats":100,"sort":1},
+    {"name":"Standard",     "description":"Standard access — premium property listings",        "stars":40,"seats":100,"sort":2},
+    {"name":"Professional", "description":"Pro access — exclusive listings + analytics",        "stars":60,"seats":50, "sort":3},
+    {"name":"Ultimate",     "description":"Unlimited access — all listings + priority support", "stars":80,"seats":25, "sort":4}
   ]'::JSONB;
   plan JSONB;
 BEGIN

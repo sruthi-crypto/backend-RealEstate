@@ -232,6 +232,31 @@ async function handleUserMe(request: Request, env: Env): Promise<Response> {
 	} catch { return errorResponse("Unauthorized", 401); }
 }
 
+async function handleUserTickets(request: Request, env: Env): Promise<Response> {
+	const auth = request.headers.get("Authorization");
+	if (!auth) return errorResponse("Unauthorized", 401);
+	try {
+		const token = auth.replace("Bearer ", "");
+		const secret = new TextEncoder().encode(env.JWT_SECRET);
+		const { payload } = await jwtVerify(token, secret);
+		if (payload.role !== "user") return errorResponse("Unauthorized", 401);
+		const tickets = await callSupabase(env,
+			`/rest/v1/tickets?user_id=eq.${payload.id}&order=issued_at.desc&select=*`
+		) as Record<string, unknown>[] | null;
+		// fetch package names for each ticket
+		const pkgIds = [...new Set((tickets || []).map(t => t.package_id as string))];
+		let pkgMap: Record<string, string> = {};
+		if (pkgIds.length > 0) {
+			const pkgs = await callSupabase(env,
+				`/rest/v1/packages?id=in.(${pkgIds.join(",")})&select=id,name`
+			) as Record<string, unknown>[] | null;
+			pkgMap = Object.fromEntries((pkgs || []).map(p => [p.id as string, p.name as string]));
+		}
+		const enriched = (tickets || []).map(t => ({ ...t, package_name: pkgMap[t.package_id as string] || "" }));
+		return successResponse(enriched, "Tickets fetched successfully");
+	} catch { return errorResponse("Unauthorized", 401); }
+}
+
 // ================= TELEGRAM STARS PAYMENT =================
 
 function generateOrderId(seq: number): string {
@@ -636,6 +661,7 @@ export default {
 			if (pathname === "/api/user-auth/register" && request.method === "POST") return handleUserRegister(request, env);
 			if (pathname === "/api/user-auth/login"    && request.method === "POST") return handleUserLogin(request, env);
 			if (pathname === "/api/user-auth/me"       && request.method === "GET")  return handleUserMe(request, env);
+			if (pathname === "/api/user-auth/tickets"  && request.method === "GET")  return handleUserTickets(request, env);
 
 			// ── packages (public GET, admin POST/PATCH/DELETE) ──
 			if (pathname === "/api/packages" && request.method === "GET") return handleGetPackages(env);
