@@ -724,8 +724,25 @@ export default {
 			// ── tickets (admin) ──
 			if (pathname === "/api/tickets" && request.method === "GET") {
 				if (!(await verifyAdmin(request, env))) return errorResponse("Unauthorized", 401);
-				const data = await callSupabase(env, "/rest/v1/tickets?order=issued_at.desc&select=*");
-				return successResponse(data, "Tickets fetched");
+				const tickets = await callSupabase(env, "/rest/v1/tickets?order=issued_at.desc&select=*") as Record<string, unknown>[] | null;
+				const pkgIds = [...new Set((tickets || []).map(t => t.package_id as string))];
+				const userIds = [...new Set((tickets || []).map(t => t.user_id as string))];
+				let pkgMap: Record<string, string> = {};
+				let userMap: Record<string, string> = {};
+				if (pkgIds.length > 0) {
+					const pkgs = await callSupabase(env, `/rest/v1/packages?id=in.(${pkgIds.join(",")})&select=id,name`) as Record<string, unknown>[] | null;
+					pkgMap = Object.fromEntries((pkgs || []).map(p => [p.id as string, p.name as string]));
+				}
+				if (userIds.length > 0) {
+					const users = await callSupabase(env, `/rest/v1/users?id=in.(${userIds.join(",")})&select=id,phone`) as Record<string, unknown>[] | null;
+					userMap = Object.fromEntries((users || []).map(u => [u.id as string, u.phone as string]));
+				}
+				const enriched = (tickets || []).map(t => ({
+					...t,
+					package_name: pkgMap[t.package_id as string] || "",
+					user_phone: userMap[t.user_id as string] || ""
+				}));
+				return successResponse(enriched, "Tickets fetched");
 			}
 
 			// ── booking logs (admin) ──
