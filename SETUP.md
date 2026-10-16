@@ -64,7 +64,7 @@ Edit `.env` file (update the values):
 ```env
 # ── Telegram Bot ─────────────────────────────────────────────
 BOT_TOKEN=YOUR_BOT_TOKEN_HERE
-BOT_USERNAME=Sai_test_45_bot
+BOT_USERNAME=supremventures_bot
 TELEGRAM_WEBHOOK_SECRET=tradeiq-webhook-secret-32chars-min
 TELEGRAM_CHANNEL_ID=-1001234567890
 

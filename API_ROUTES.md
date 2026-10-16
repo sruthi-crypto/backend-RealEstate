@@ -145,7 +145,7 @@ Response 201:
     "orderId": "ORD-20260830-0001",
     "invoicePayload": "ORD-20260830-0001_abc123def456",
     "stars": 1,
-    "botLink": "https://t.me/Sai_test_45_bot?start=ORD-20260830-0001"
+    "botLink": "https://t.me/supremventures_bot?start=ORD-20260830-0001"
   }
 }
 

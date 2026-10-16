@@ -93,7 +93,7 @@ VALUES (order_id, 'order_created', 1, 'package=Package A stars=1 user=john@examp
     "orderId": "ORD-20260830-0001",
     "invoicePayload": "ORD-20260830-0001_abc123def456",
     "stars": 1,
-    "botLink": "https://t.me/Sai_test_45_bot?start=ORD-20260830-0001"
+    "botLink": "https://t.me/supremventures_bot?start=ORD-20260830-0001"
   }
 }
 ```
@@ -111,7 +111,7 @@ window.open(botLink, '_blank');
 
 ```
 1. User opens Telegram bot link:
-   https://t.me/Sai_test_45_bot?start=ORD-20260830-0001
+  https://t.me/supremventures_bot?start=ORD-20260830-0001
 
 2. Telegram Bot receives /start command with ORDER ID
 3. Bot handler calls: BookingService.sendInvoiceForOrder()

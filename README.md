@@ -316,7 +316,7 @@ Response:
     "orderId": "uuid",
     "bookingId": "TRQ-20240601-0001",
     "invoicePayload": "book_uuid_uuid",
-    "botDeepLink": "https://t.me/Sai_test_45_bot",
+        "botDeepLink": "https://t.me/supremventures_bot",
     "stars": 1
   }
 }
